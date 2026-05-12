@@ -10,6 +10,7 @@ import StockModal from "@/components/StockModal";
 import PinnedStocks from "@/components/PinnedStocks";
 import type { StockData } from "@/components/StockBubble";
 import { getTopStocks, getPins, pinStock, unpinStock, updateBudget, getBudget } from "@/lib/api";
+import StockSearch from "@/components/StockSearch";
 
 export default function Dashboard() {
   const { isAuthenticated, loading: authLoading, profile, refreshProfile } = useAuth();
@@ -87,6 +88,10 @@ export default function Dashboard() {
       <KospiBar budget={budget} onBudgetChange={setBudget} onBudgetSave={handleBudgetSave} />
 
       <main className="relative max-w-7xl mx-auto px-6 py-10">
+        <section className="mb-10">
+          <StockSearch onSelectStock={setSelectedStock} />
+        </section>
+
         <section className="mb-14">
           <div className="flex items-baseline gap-3 mb-6">
             <h2 className="text-white text-2xl font-semibold tracking-tight">Today&apos;s Movers</h2>
