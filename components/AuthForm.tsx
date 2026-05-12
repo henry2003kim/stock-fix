@@ -35,10 +35,13 @@ export default function AuthForm() {
         const { error: err } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { username: username.trim() } },
+          options: {
+            data: { username: username.trim() },
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+          },
         });
         if (err) throw err;
-        router.push("/dashboard");
+        setSuccess("Account created! Check your email for a confirmation link, then sign in.");
 
       } else if (mode === "login") {
         // Accept username or email
