@@ -19,12 +19,17 @@ interface Props {
   onRefresh: () => void;
 }
 
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function TransactionForm({ transactions, onRefresh }: Props) {
   const [ticker, setTicker] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [action, setAction] = useState<"BUY" | "SELL">("BUY");
   const [note, setNote] = useState("");
+  const [date, setDate] = useState(todayISO());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -36,11 +41,18 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
     setLoading(true);
     setError("");
     try {
-      await addTransaction(ticker.toUpperCase(), parseFloat(quantity), parseFloat(price.replace(/,/g, "")), action, note || undefined);
-      setTicker(""); setQuantity(""); setPrice(""); setNote("");
+      await addTransaction(
+        ticker.toUpperCase(),
+        parseFloat(quantity),
+        parseFloat(price.replace(/,/g, "")),
+        action,
+        note || undefined,
+        date,
+      );
+      setTicker(""); setQuantity(""); setPrice(""); setNote(""); setDate(todayISO());
       onRefresh();
     } catch (err: unknown) {
-      setError((err as { response?: { data?: { detail?: string } } })?.response?.data?.detail || "Failed to add transaction");
+      setError((err as { message?: string })?.message || "Failed to add transaction");
     } finally {
       setLoading(false);
     }
@@ -53,8 +65,20 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
     } catch { /* ignore */ }
   };
 
-  const totalBuy = transactions.filter((t) => t.action === "BUY").reduce((sum, t) => sum + t.price * t.quantity, 0);
-  const totalSell = transactions.filter((t) => t.action === "SELL").reduce((sum, t) => sum + t.price * t.quantity, 0);
+  // P&L summary
+  const totalBuy  = transactions.filter((t) => t.action === "BUY").reduce((s, t) => s + t.price * t.quantity, 0);
+  const totalSell = transactions.filter((t) => t.action === "SELL").reduce((s, t) => s + t.price * t.quantity, 0);
+  const netPL = totalSell - totalBuy;
+
+  // Per-ticker P&L
+  const byTicker = transactions.reduce<Record<string, { bought: number; sold: number }>>((acc, t) => {
+    if (!acc[t.ticker]) acc[t.ticker] = { bought: 0, sold: 0 };
+    if (t.action === "BUY")  acc[t.ticker].bought += t.price * t.quantity;
+    if (t.action === "SELL") acc[t.ticker].sold   += t.price * t.quantity;
+    return acc;
+  }, {});
+
+  const fmt = (n: number) => `₩${Math.abs(n).toLocaleString("ko-KR")}`;
 
   return (
     <div className="space-y-6">
@@ -62,7 +86,7 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
       <form onSubmit={handleAdd} className="bg-white/4 border border-white/8 rounded-2xl p-5 space-y-4">
         <h3 className="text-white font-medium text-sm">Record Transaction</h3>
 
-        {/* Action toggle */}
+        {/* BUY / SELL toggle */}
         <div className="flex gap-2">
           {(["BUY", "SELL"] as const).map((a) => (
             <button
@@ -83,7 +107,7 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
           ))}
         </div>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           <input
             className={inputCls}
             placeholder="Ticker (e.g. 005930)"
@@ -91,6 +115,16 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
             onChange={(e) => setTicker(e.target.value.toUpperCase())}
             required
           />
+          <input
+            className={inputCls + " [color-scheme:dark]"}
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            required
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
           <input
             className={inputCls}
             placeholder="Quantity"
@@ -103,7 +137,7 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
           />
           <input
             className={inputCls}
-            placeholder="Price (₩)"
+            placeholder="Price per share (₩)"
             value={price}
             onChange={(e) => setPrice(e.target.value)}
             required
@@ -130,16 +164,47 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
 
       {/* Summary */}
       {transactions.length > 0 && (
-        <div className="grid grid-cols-2 gap-3">
-          <div className="bg-green-500/8 border border-green-500/15 rounded-xl p-3">
-            <p className="text-green-400/60 text-xs">Total Bought</p>
-            <p className="text-green-400 font-medium text-sm">₩{totalBuy.toLocaleString("ko-KR")}</p>
+        <>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="bg-green-500/8 border border-green-500/15 rounded-xl p-3">
+              <p className="text-green-400/60 text-xs">Total Bought</p>
+              <p className="text-green-400 font-medium text-sm">{fmt(totalBuy)}</p>
+            </div>
+            <div className="bg-red-500/8 border border-red-500/15 rounded-xl p-3">
+              <p className="text-red-400/60 text-xs">Total Sold</p>
+              <p className="text-red-400 font-medium text-sm">{fmt(totalSell)}</p>
+            </div>
+            <div className={`border rounded-xl p-3 ${netPL >= 0 ? "bg-blue-500/8 border-blue-500/15" : "bg-orange-500/8 border-orange-500/15"}`}>
+              <p className={`text-xs ${netPL >= 0 ? "text-blue-400/60" : "text-orange-400/60"}`}>Net P&amp;L</p>
+              <p className={`font-medium text-sm ${netPL >= 0 ? "text-blue-400" : "text-orange-400"}`}>
+                {netPL >= 0 ? "+" : "-"}{fmt(netPL)}
+              </p>
+            </div>
           </div>
-          <div className="bg-red-500/8 border border-red-500/15 rounded-xl p-3">
-            <p className="text-red-400/60 text-xs">Total Sold</p>
-            <p className="text-red-400 font-medium text-sm">₩{totalSell.toLocaleString("ko-KR")}</p>
-          </div>
-        </div>
+
+          {/* Per-ticker breakdown */}
+          {Object.keys(byTicker).length > 1 && (
+            <div className="bg-white/3 border border-white/6 rounded-xl p-4 space-y-2">
+              <p className="text-white/40 text-xs uppercase tracking-wider mb-3">P&amp;L by Ticker</p>
+              {Object.entries(byTicker).map(([t, { bought, sold }]) => {
+                const pl = sold - bought;
+                return (
+                  <div key={t} className="flex items-center justify-between">
+                    <span className="text-white/70 text-sm font-mono">{t}</span>
+                    <div className="text-right">
+                      <span className={`text-sm font-medium ${pl >= 0 ? "text-blue-400" : "text-orange-400"}`}>
+                        {pl >= 0 ? "+" : "-"}{fmt(pl)}
+                      </span>
+                      <span className="text-white/20 text-xs ml-2">
+                        {sold > 0 ? `sold ${fmt(sold)}` : `cost ${fmt(bought)}`}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
 
       {/* Transaction list */}
@@ -149,39 +214,47 @@ export default function TransactionForm({ transactions, onRefresh }: Props) {
           {transactions.length === 0 ? (
             <p className="text-white/20 text-sm py-4 text-center">No transactions recorded yet</p>
           ) : (
-            [...transactions].reverse().map((t) => (
-              <motion.div
-                key={t.id}
-                initial={{ opacity: 0, x: -10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: 10 }}
-                className="flex items-center justify-between bg-white/4 border border-white/8 rounded-xl px-4 py-3 group"
-              >
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
-                    t.action === "BUY" ? "text-green-400 bg-green-500/10 border-green-500/20" : "text-red-400 bg-red-500/10 border-red-500/20"
-                  }`}>
-                    {t.action}
-                  </span>
-                  <div>
-                    <span className="text-white font-medium text-sm">{t.ticker}</span>
-                    {t.note && <span className="text-white/30 text-xs ml-2">{t.note}</span>}
+            [...transactions]
+              .sort((a, b) => new Date(b.executed_at).getTime() - new Date(a.executed_at).getTime())
+              .map((t) => (
+                <motion.div
+                  key={t.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: 10 }}
+                  className="flex items-center justify-between bg-white/4 border border-white/8 rounded-xl px-4 py-3 group"
+                >
+                  <div className="flex items-center gap-3">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                      t.action === "BUY"
+                        ? "text-green-400 bg-green-500/10 border-green-500/20"
+                        : "text-red-400 bg-red-500/10 border-red-500/20"
+                    }`}>
+                      {t.action}
+                    </span>
+                    <div>
+                      <span className="text-white font-medium text-sm">{t.ticker}</span>
+                      {t.note && <span className="text-white/30 text-xs ml-2">{t.note}</span>}
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-4">
-                  <div className="text-right">
-                    <p className="text-white/70 text-sm">{t.quantity} × ₩{t.price.toLocaleString("ko-KR")}</p>
-                    <p className="text-white/30 text-xs">{new Date(t.executed_at).toLocaleDateString("ko-KR")}</p>
+                  <div className="flex items-center gap-4">
+                    <div className="text-right">
+                      <p className="text-white/70 text-sm">
+                        {t.quantity} × {fmt(t.price)}
+                      </p>
+                      <p className="text-white/30 text-xs">
+                        {new Date(t.executed_at).toLocaleDateString("ko-KR", { year: "numeric", month: "short", day: "numeric" })}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => handleDelete(t.id)}
+                      className="text-white/15 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
-                  <button
-                    onClick={() => handleDelete(t.id)}
-                    className="text-white/15 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              </motion.div>
-            ))
+                </motion.div>
+              ))
           )}
         </AnimatePresence>
       </div>

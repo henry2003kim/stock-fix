@@ -71,13 +71,22 @@ export const addTransaction = async (
   quantity: number,
   price: number,
   action: string,
-  note?: string
+  note?: string,
+  executedAt?: string,
 ) => {
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) throw new Error("Not authenticated");
   const { data, error } = await supabase
     .from("transactions")
-    .insert({ user_id: user.id, ticker: ticker.toUpperCase(), quantity, price, action: action.toUpperCase(), note: note ?? null })
+    .insert({
+      user_id: user.id,
+      ticker: ticker.toUpperCase(),
+      quantity,
+      price,
+      action: action.toUpperCase(),
+      note: note ?? null,
+      ...(executedAt ? { executed_at: new Date(executedAt).toISOString() } : {}),
+    })
     .select()
     .single();
   if (error) throw error;
