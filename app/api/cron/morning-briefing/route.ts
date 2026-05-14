@@ -3,10 +3,9 @@ import { Resend } from "resend";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchKospiIndex, fetchTopStocks } from "@/lib/stockData";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
 export async function GET(req: Request) {
+  const resend = new Resend(process.env.RESEND_API_KEY);
+  const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const authHeader = req.headers.get("authorization");
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
