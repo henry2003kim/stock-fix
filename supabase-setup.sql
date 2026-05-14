@@ -30,10 +30,18 @@ create table if not exists public.transactions (
   executed_at timestamptz default now()
 );
 
+create table if not exists public.saved_proposals (
+  id bigserial primary key,
+  user_id uuid references auth.users(id) on delete cascade not null unique,
+  proposal jsonb not null,
+  saved_at timestamptz default now()
+);
+
 -- 2. Row Level Security
 alter table public.user_profiles enable row level security;
 alter table public.pinned_stocks enable row level security;
 alter table public.transactions enable row level security;
+alter table public.saved_proposals enable row level security;
 
 -- 3. Policies
 create policy "own profile select" on public.user_profiles for select using (auth.uid() = id);
@@ -42,6 +50,7 @@ create policy "own profile insert" on public.user_profiles for insert with check
 
 create policy "own pins all" on public.pinned_stocks for all using (auth.uid() = user_id);
 create policy "own transactions all" on public.transactions for all using (auth.uid() = user_id);
+create policy "own proposals all" on public.saved_proposals for all using (auth.uid() = user_id);
 
 -- 4. Auto-create profile when a user signs up
 create or replace function public.handle_new_user()

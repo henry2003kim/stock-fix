@@ -1,6 +1,7 @@
 "use client";
+import { useState } from "react";
 import { motion } from "framer-motion";
-import { TrendingUp, TrendingDown, ShieldCheck, Eye, AlertTriangle } from "lucide-react";
+import { TrendingUp, TrendingDown, ShieldCheck, Eye, AlertTriangle, BookmarkCheck, Bookmark } from "lucide-react";
 
 interface Recommendation {
   ticker: string;
@@ -29,6 +30,8 @@ interface Proposal {
 
 interface Props {
   proposal: Proposal;
+  onSave?: () => Promise<void>;
+  isSaved?: boolean;
 }
 
 const ACTION_STYLES: Record<string, { bg: string; text: string; border: string; icon: React.ReactNode }> = {
@@ -37,7 +40,14 @@ const ACTION_STYLES: Record<string, { bg: string; text: string; border: string; 
   SELL: { bg: "bg-red-500/10", text: "text-red-400", border: "border-red-500/20", icon: <TrendingDown size={14} /> },
 };
 
-export default function InvestmentProposal({ proposal }: Props) {
+export default function InvestmentProposal({ proposal, onSave, isSaved }: Props) {
+  const [saving, setSaving] = useState(false);
+
+  const handleSave = async () => {
+    if (!onSave) return;
+    setSaving(true);
+    try { await onSave(); } finally { setSaving(false); }
+  };
   if (proposal.error) {
     return (
       <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-5 text-red-400 text-sm">
@@ -165,6 +175,25 @@ export default function InvestmentProposal({ proposal }: Props) {
           </div>
         )}
       </div>
+
+      {onSave && (
+        <button
+          onClick={handleSave}
+          disabled={saving || isSaved}
+          className={`w-full flex items-center justify-center gap-2 py-3 rounded-2xl text-sm font-medium transition-all border ${
+            isSaved
+              ? "bg-green-500/10 border-green-500/20 text-green-400 cursor-default"
+              : "bg-white/5 border-white/10 text-white/60 hover:bg-blue-500/10 hover:border-blue-500/20 hover:text-blue-400"
+          }`}
+        >
+          {isSaved
+            ? <><BookmarkCheck size={15} /> Strategy Saved</>
+            : saving
+            ? "Saving..."
+            : <><Bookmark size={15} /> Save Strategy</>
+          }
+        </button>
+      )}
 
       <p className="text-white/20 text-xs text-center">
         Generated {new Date(proposal.generated_at).toLocaleString("ko-KR")} · For informational purposes only, not financial advice

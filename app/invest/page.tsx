@@ -7,8 +7,9 @@ import { useAuth } from "@/hooks/useAuth";
 import InvestmentDial from "@/components/InvestmentDial";
 import InvestmentProposal from "@/components/InvestmentProposal";
 import TransactionForm from "@/components/TransactionForm";
+import SavedStrategy from "@/components/SavedStrategy";
 import type { StockData } from "@/components/StockBubble";
-import { getTopStocks, getPins, getBudget, updateBudget, getTransactions, getProposal } from "@/lib/api";
+import { getTopStocks, getPins, getBudget, updateBudget, getTransactions, getProposal, saveProposal, getSavedProposal, clearSavedProposal } from "@/lib/api";
 import type { Transaction } from "@/lib/supabase";
 
 interface Proposal {
@@ -36,6 +37,7 @@ export default function InvestPage() {
   const [generating, setGenerating] = useState(false);
   const [dataLoading, setDataLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<"proposal" | "transactions">("proposal");
+  const [savedProposalRow, setSavedProposalRow] = useState<{ proposal: Proposal; saved_at: string } | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -50,15 +52,29 @@ export default function InvestPage() {
   const loadData = async () => {
     setDataLoading(true);
     try {
-      const [allStocksRes, pinsRes, budgetRes, txnRes] = await Promise.all([
-        getTopStocks(20), getPins(), getBudget(), getTransactions(),
+      const [allStocksRes, pinsRes, budgetRes, txnRes, savedRes] = await Promise.all([
+        getTopStocks(20), getPins(), getBudget(), getTransactions(), getSavedProposal(),
       ]);
       const pinnedTickers: string[] = pinsRes.data;
       setPinnedStocks((allStocksRes.data as StockData[]).filter((s) => pinnedTickers.includes(s.ticker)));
       setBudget(budgetRes.data.budget);
       setTransactions(txnRes.data as Transaction[]);
+      if (savedRes.data) {
+        setSavedProposalRow({ proposal: savedRes.data.proposal as Proposal, saved_at: savedRes.data.saved_at });
+      }
     } catch { /* ignore */ }
     finally { setDataLoading(false); }
+  };
+
+  const handleSaveProposal = async () => {
+    if (!proposal) return;
+    await saveProposal(proposal);
+    setSavedProposalRow({ proposal, saved_at: new Date().toISOString() });
+  };
+
+  const handleClearProposal = async () => {
+    await clearSavedProposal();
+    setSavedProposalRow(null);
   };
 
   const handleGenerateProposal = async () => {
@@ -177,7 +193,7 @@ export default function InvestPage() {
               <AnimatePresence mode="wait">
                 {activeTab === "proposal" ? (
                   <motion.div key="proposal" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                    {proposal ? <InvestmentProposal proposal={proposal} /> : (
+                    {proposal ? <InvestmentProposal proposal={proposal} onSave={handleSaveProposal} isSaved={!!savedProposalRow && savedProposalRow.proposal.generated_at === proposal.generated_at} /> : (
                       <div className="py-20 text-center">
                         <Sparkles className="w-10 h-10 text-white/10 mx-auto mb-4" />
                         <p className="text-white/30 text-sm">No proposal yet</p>
@@ -187,7 +203,14 @@ export default function InvestPage() {
                   </motion.div>
                 ) : (
                   <motion.div key="transactions" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-                    <TransactionForm transactions={transactions as Transaction[]} onRefresh={loadData} />
+                    {savedProposalRow && (
+                    <SavedStrategy
+                      proposal={savedProposalRow.proposal}
+                      savedAt={savedProposalRow.saved_at}
+                      onClear={handleClearProposal}
+                    />
+                  )}
+                  <TransactionForm transactions={transactions as Transaction[]} onRefresh={loadData} />
                   </motion.div>
                 )}
               </AnimatePresence>

@@ -98,6 +98,33 @@ export const deleteTransaction = async (id: number) => {
   return { data: { message: "Deleted" } };
 };
 
+// ── Saved proposals (Supabase) ──────────────────────────────────────────────
+
+export const getSavedProposal = async () => {
+  const { data } = await supabase
+    .from("saved_proposals")
+    .select("*")
+    .single();
+  return { data: data ?? null };
+};
+
+export const saveProposal = async (proposal: unknown) => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated");
+  const { error } = await supabase
+    .from("saved_proposals")
+    .upsert({ user_id: user.id, proposal, saved_at: new Date().toISOString() }, { onConflict: "user_id" });
+  if (error) throw error;
+  return { data: { ok: true } };
+};
+
+export const clearSavedProposal = async () => {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) throw new Error("Not authenticated");
+  await supabase.from("saved_proposals").delete().eq("user_id", user.id);
+  return { data: { ok: true } };
+};
+
 // ── AI Advisor (Next.js API route) ─────────────────────────────────────────
 
 export const getProposal = async (
