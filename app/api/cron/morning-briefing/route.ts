@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import Anthropic from "@anthropic-ai/sdk";
-import { fetchKospiIndex, fetchTopStocks, getStockFactors } from "@/lib/stockData";
+import { fetchTopStocks, getStockFactors } from "@/lib/stockData";
 
 export async function GET(req: Request) {
   const authHeader = req.headers.get("authorization");
@@ -9,62 +9,75 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const resend   = new Resend(process.env.RESEND_API_KEY);
+  const resend    = new Resend(process.env.RESEND_API_KEY);
   const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   try {
-    const [kospi, stocks] = await Promise.all([
-      fetchKospiIndex(),
-      fetchTopStocks(10),
-    ]);
+    // Fetch all 20 stocks so losers are always captured
+    const allStocks = await fetchTopStocks(20);
 
-    // ── Market breadth ────────────────────────────────
-    const gainers  = stocks.filter((s) => s.change_percent > 0);
-    const losers   = stocks.filter((s) => s.change_percent < 0);
-    const neutral  = stocks.filter((s) => s.change_percent === 0);
-    const breadthPct = Math.round((gainers.length / stocks.length) * 100);
+    const kospiRes = await fetch(
+      "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI",
+      { headers: { "User-Agent": "Mozilla/5.0", Referer: "https://finance.naver.com/" } }
+    );
+    const kospiJson = await kospiRes.json();
+    const dd = kospiJson?.datas?.[0];
+    const kospiValue = parseFloat(String(dd?.closePrice ?? "0").replace(/,/g, "")) || 0;
+    const kospiChangeRaw = String(dd?.compareToPreviousClosePrice ?? "0");
+    const kospiChange = parseFloat(kospiChangeRaw.replace(/,/g, "").replace(/\+/g, "")) || 0;
+    const kospiIsUp = !kospiChangeRaw.trim().startsWith("-");
+    const kospiPct = parseFloat(String(dd?.fluctuationsRatio ?? "0")) * (kospiIsUp ? 1 : -1);
 
-    // ── Sector groupings ──────────────────────────────
-    const sectorMap: Record<string, { changes: number[]; label: string }> = {};
-    stocks.forEach((s) => {
+    // Sorted views
+    const gainers = [...allStocks].filter((s) => s.change_percent > 0).sort((a, b) => b.change_percent - a.change_percent);
+    const losers  = [...allStocks].filter((s) => s.change_percent < 0).sort((a, b) => a.change_percent - b.change_percent);
+    const topG    = gainers.slice(0, 5);
+    const topL    = losers.slice(0, 5);
+    const movers  = [...allStocks].sort((a, b) => Math.abs(b.change_percent) - Math.abs(a.change_percent)).slice(0, 8);
+
+    const breadthPct = Math.round((gainers.length / allStocks.length) * 100);
+
+    // Sector groupings
+    const sectorMap: Record<string, number[]> = {};
+    allStocks.forEach((s) => {
       const { sector } = getStockFactors(s.ticker);
-      if (!sectorMap[sector]) sectorMap[sector] = { changes: [], label: sector };
-      sectorMap[sector].changes.push(s.change_percent);
+      if (!sectorMap[sector]) sectorMap[sector] = [];
+      sectorMap[sector].push(s.change_percent);
     });
-    const sectors = Object.values(sectorMap)
-      .map((s) => ({ label: s.label, avg: s.changes.reduce((a, b) => a + b, 0) / s.changes.length }))
+    const sectors = Object.entries(sectorMap)
+      .map(([label, changes]) => ({ label, avg: changes.reduce((a, b) => a + b, 0) / changes.length }))
       .sort((a, b) => b.avg - a.avg);
 
-    // ── Top movers sorted by abs change ───────────────
-    const movers = [...stocks].sort((a, b) => Math.abs(b.change_percent) - Math.abs(a.change_percent)).slice(0, 8);
+    // QuickChart — v2 horizontalBar (no TS syntax in callbacks)
+    const chartLabels  = movers.map((s) => s.name);
+    const chartData    = movers.map((s) => parseFloat(s.change_percent.toFixed(2)));
+    const chartColors  = movers.map((s) => s.change_percent >= 0 ? "rgba(34,197,94,0.9)" : "rgba(239,68,68,0.9)");
 
-    // ── QuickChart bar chart URL ───────────────────────
     const chartConfig = {
-      type: "bar",
+      type: "horizontalBar",
       data: {
-        labels: movers.map((s) => s.name),
-        datasets: [{
-          data: movers.map((s) => parseFloat(s.change_percent.toFixed(2))),
-          backgroundColor: movers.map((s) => s.change_percent >= 0 ? "rgba(34,197,94,0.85)" : "rgba(239,68,68,0.85)"),
-          borderRadius: 4,
-        }],
+        labels: chartLabels,
+        datasets: [{ data: chartData, backgroundColor: chartColors, borderWidth: 0 }],
       },
       options: {
-        indexAxis: "y",
-        plugins: { legend: { display: false } },
+        legend: { display: false },
         scales: {
-          x: {
-            grid: { color: "rgba(255,255,255,0.06)" },
-            ticks: { color: "#9ca3af", font: { size: 11 }, callback: (v: number) => `${v > 0 ? "+" : ""}${v}%` },
-          },
-          y: { grid: { display: false }, ticks: { color: "#e5e7eb", font: { size: 12 } } },
+          xAxes: [{
+            gridLines: { color: "rgba(255,255,255,0.07)", zeroLineColor: "rgba(255,255,255,0.15)" },
+            ticks: { fontColor: "#94a3b8", fontSize: 12, fontStyle: "bold" },
+            scaleLabel: { display: true, labelString: "% Change", fontColor: "#64748b", fontSize: 11 },
+          }],
+          yAxes: [{
+            gridLines: { display: false },
+            ticks: { fontColor: "#f1f5f9", fontSize: 13, fontStyle: "bold" },
+          }],
         },
       },
     };
-    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=rgb%2817%2C24%2C39%29&width=520&height=300`;
+    const chartUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&backgroundColor=rgb%280%2C6%2C18%29&width=540&height=320`;
 
-    // ── AI structured briefing ────────────────────────
-    const stockLine = stocks.map((s) => `${s.name}: ${s.change_percent >= 0 ? "+" : ""}${s.change_percent.toFixed(2)}%`).join(", ");
+    // AI briefing
+    const stockLine  = allStocks.slice(0, 10).map((s) => `${s.name}: ${s.change_percent >= 0 ? "+" : ""}${s.change_percent.toFixed(2)}%`).join(", ");
     const sectorLine = sectors.map((s) => `${s.label} ${s.avg >= 0 ? "+" : ""}${s.avg.toFixed(2)}%`).join(", ");
 
     const aiResponse = await anthropic.messages.create({
@@ -72,20 +85,20 @@ export async function GET(req: Request) {
       max_tokens: 800,
       messages: [{
         role: "user",
-        content: `You are writing a morning market briefing in the style of Exec Sum (punchy, direct, slightly casual) combined with PitchBook (data-driven, professional).
+        content: `You are a sharp Korean equity market analyst writing a pre-market briefing in the style of PitchBook and Exec Sum — data-driven, direct, zero fluff.
 
-KOSPI: ${kospi.value.toLocaleString("ko-KR")} (${kospi.change_percent >= 0 ? "+" : ""}${kospi.change_percent.toFixed(2)}%)
+KOSPI: ${kospiValue.toLocaleString("ko-KR")} (${kospiPct >= 0 ? "+" : ""}${kospiPct.toFixed(2)}%)
+Breadth: ${gainers.length} gainers / ${losers.length} losers of ${allStocks.length}
 Movers: ${stockLine}
 Sectors: ${sectorLine}
-Breadth: ${gainers.length} gainers, ${losers.length} losers of ${stocks.length} tracked
 
-Return ONLY valid JSON in this exact structure:
+Return ONLY valid JSON:
 {
-  "headline": "one punchy sentence capturing the market story today (max 12 words)",
-  "brief": ["bullet 1 (specific, data-driven)", "bullet 2", "bullet 3", "bullet 4"],
+  "headline": "one punchy sentence (max 12 words, no quotes)",
+  "brief": ["bullet 1 — specific, data-driven", "bullet 2", "bullet 3", "bullet 4"],
   "opportunities": ["opportunity 1", "opportunity 2"],
   "risks": ["risk 1", "risk 2"],
-  "watch": ["specific thing to watch 1", "thing 2", "thing 3"]
+  "watch": ["specific catalyst or event to watch 1", "watch 2", "watch 3"]
 }`,
       }],
     });
@@ -95,217 +108,195 @@ Return ONLY valid JSON in this exact structure:
       ai = JSON.parse((aiResponse.content[0] as { text: string }).text);
     } catch {
       ai = {
-        headline: "Korean markets open with broad momentum",
-        brief: ["KOSPI moves as tech leads gains", "Semiconductors outperform the benchmark", "Retail and institutional flows diverge"],
-        opportunities: ["Semiconductor sector breakout", "EV battery supply chain"],
-        risks: ["Global rate uncertainty", "FX volatility"],
-        watch: ["US economic data", "Chip demand signals", "Foreign investor flows"],
+        headline: "Korean markets move on broad macro signals",
+        brief: ["KOSPI reflects overnight sentiment shifts", "Semiconductor names lead activity today", "Foreign flows remain a key variable", "Watch for FX pressure on exporters"],
+        opportunities: ["Tech sector momentum building", "Value names at support levels"],
+        risks: ["Global rate uncertainty persisting", "FX headwinds for exporters"],
+        watch: ["US macro data after market close", "Chip export order flow", "Institutional net buying direction"],
       };
     }
 
-    // ── Date ──────────────────────────────────────────
-    const today = new Date().toLocaleDateString("en-US", {
-      weekday: "long", year: "numeric", month: "long", day: "numeric",
-      timeZone: "Asia/Seoul",
-    });
-    const timeKST = new Date().toLocaleTimeString("en-US", {
-      hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Seoul",
-    });
+    // Formatting helpers
+    const fmt   = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+    const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Asia/Seoul" });
+    const timeKST = new Date().toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Seoul" });
 
-    const kospiColor = kospi.is_up ? "#22c55e" : "#ef4444";
-    const kospiArrow = kospi.is_up ? "▲" : "▼";
-    const fmt = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
+    const kospiColor = kospiIsUp ? "#4ade80" : "#f87171";
+    const kospiArrow = kospiIsUp ? "▲" : "▼";
 
-    // ── Sector bar HTML ────────────────────────────────
-    const maxAbsSector = Math.max(...sectors.map((s) => Math.abs(s.avg)), 0.01);
+    // Sector bars
+    const maxAbs = Math.max(...sectors.map((s) => Math.abs(s.avg)), 0.01);
     const sectorRows = sectors.map((s) => {
-      const pct = Math.round((Math.abs(s.avg) / maxAbsSector) * 100);
-      const color = s.avg >= 0 ? "#22c55e" : "#ef4444";
+      const pct   = Math.round((Math.abs(s.avg) / maxAbs) * 100);
+      const color = s.avg >= 0 ? "#4ade80" : "#f87171";
       return `
         <tr>
-          <td style="padding:6px 12px 6px 0;font-size:12px;color:#d1d5db;white-space:nowrap;width:130px;">${s.label}</td>
-          <td style="padding:6px 0;">
-            <table cellpadding="0" cellspacing="0" style="width:100%;">
-              <tr>
-                <td style="width:${pct}%;background:${color};opacity:0.8;height:8px;border-radius:4px;"></td>
-                <td style="width:${100 - pct}%;"></td>
-              </tr>
-            </table>
+          <td style="padding:7px 14px 7px 0;font-size:13px;font-weight:600;color:#cbd5e1;white-space:nowrap;width:140px;">${s.label}</td>
+          <td style="padding:7px 0;">
+            <table cellpadding="0" cellspacing="0" style="width:100%;"><tr>
+              <td style="width:${pct}%;background:${color};height:9px;border-radius:5px;opacity:0.85;"></td>
+              <td style="width:${100 - pct}%;"></td>
+            </tr></table>
           </td>
-          <td style="padding:6px 0 6px 10px;font-size:12px;color:${color};font-weight:700;white-space:nowrap;width:54px;text-align:right;">${fmt(s.avg)}</td>
+          <td style="padding:7px 0 7px 12px;font-size:13px;color:${color};font-weight:800;white-space:nowrap;width:58px;text-align:right;">${fmt(s.avg)}</td>
         </tr>`;
     }).join("");
 
-    // ── Movers table HTML ──────────────────────────────
-    const topG = gainers.sort((a, b) => b.change_percent - a.change_percent).slice(0, 4);
-    const topL = losers.sort((a, b) => a.change_percent - b.change_percent).slice(0, 4);
-
-    const moverCell = (stocks: typeof topG, color: string) =>
-      stocks.map((s) => `
-        <tr>
-          <td style="padding:5px 8px 5px 0;font-size:12px;color:#e5e7eb;">${s.name}</td>
-          <td style="padding:5px 0;font-size:12px;color:${color};font-weight:700;text-align:right;">
-            ${fmt(s.change_percent)}
-          </td>
-        </tr>`).join("");
+    // Mover rows
+    const moverRows = (list: typeof topG, color: string) =>
+      list.length === 0
+        ? `<tr><td colspan="2" style="font-size:13px;color:#334155;padding:6px 0;text-align:center;">None tracked</td></tr>`
+        : list.map((s) => `
+          <tr>
+            <td style="padding:6px 10px 6px 0;font-size:13px;font-weight:600;color:#e2e8f0;">${s.name}</td>
+            <td style="padding:6px 0;font-size:13px;color:${color};font-weight:800;text-align:right;white-space:nowrap;">${fmt(s.change_percent)}</td>
+          </tr>`).join("");
 
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/></head>
-<body style="margin:0;padding:0;background:#060a10;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
-<div style="max-width:600px;margin:0 auto;padding:28px 20px 40px;">
+<body style="margin:0;padding:0;background:#00040b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
+<div style="max-width:600px;margin:0 auto;padding:28px 18px 44px;">
 
-  <!-- ── HEADER ────────────────────────────────────── -->
-  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:24px;">
+  <!-- HEADER -->
+  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:22px;">
     <tr>
       <td>
-        <span style="font-size:20px;font-weight:800;color:#ffffff;letter-spacing:-0.5px;">📈 StockFix</span>
-        <span style="font-size:11px;color:#6b7280;font-weight:500;margin-left:8px;background:#111827;padding:3px 10px;border-radius:20px;border:1px solid #1f2937;">Morning Briefing</span>
+        <span style="font-size:22px;font-weight:900;color:#f8fafc;letter-spacing:-0.5px;">📈 StockFix</span>
+        <span style="font-size:11px;color:#475569;font-weight:600;margin-left:10px;background:#0a1628;padding:4px 11px;border-radius:20px;border:1px solid #1e3a5f;">Morning Briefing</span>
       </td>
       <td style="text-align:right;">
-        <span style="font-size:11px;color:#6b7280;">${today}</span><br/>
-        <span style="font-size:11px;color:#4b5563;">Sent at ${timeKST} KST</span>
+        <span style="font-size:12px;color:#64748b;font-weight:500;">${today}</span><br/>
+        <span style="font-size:11px;color:#334155;">${timeKST} KST</span>
       </td>
     </tr>
   </table>
 
-  <!-- ── HERO KPI STRIP ─────────────────────────────── -->
-  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;border-radius:16px;overflow:hidden;background:#111827;border:1px solid #1f2937;">
+  <!-- KOSPI HERO + BREADTH -->
+  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:14px;border-radius:18px;overflow:hidden;background:#040d1a;border:1px solid #0f2035;">
     <tr>
-      <td style="padding:20px 24px;border-right:1px solid #1f2937;">
-        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">KOSPI INDEX</div>
-        <div style="font-size:28px;font-weight:800;color:#ffffff;letter-spacing:-1px;">${kospi.value.toLocaleString("ko-KR")}</div>
-        <div style="font-size:14px;font-weight:700;color:${kospiColor};margin-top:3px;">${kospiArrow} ${Math.abs(kospi.change).toLocaleString("ko-KR")} (${fmt(kospi.change_percent)})</div>
+      <td style="padding:22px 26px;border-right:1px solid #0f2035;">
+        <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:8px;">KOSPI INDEX</div>
+        <div style="font-size:32px;font-weight:900;color:#f8fafc;letter-spacing:-1.5px;">${kospiValue.toLocaleString("ko-KR")}</div>
+        <div style="font-size:15px;font-weight:800;color:${kospiColor};margin-top:5px;">${kospiArrow} ${Math.abs(kospiChange).toLocaleString("ko-KR")} &nbsp;(${fmt(kospiPct)})</div>
       </td>
-      <td style="padding:20px 16px;border-right:1px solid #1f2937;text-align:center;width:100px;">
-        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">GAINERS</div>
-        <div style="font-size:28px;font-weight:800;color:#22c55e;">${gainers.length}</div>
-        <div style="font-size:10px;color:#22c55e;margin-top:3px;">of ${stocks.length} tracked</div>
+      <td style="padding:22px 18px;border-right:1px solid #0f2035;text-align:center;width:110px;">
+        <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:8px;">GAINERS</div>
+        <div style="font-size:30px;font-weight:900;color:#4ade80;">${gainers.length}</div>
+        <div style="font-size:11px;color:#166534;margin-top:4px;font-weight:600;">of ${allStocks.length}</div>
       </td>
-      <td style="padding:20px 16px;border-right:1px solid #1f2937;text-align:center;width:100px;">
-        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">LOSERS</div>
-        <div style="font-size:28px;font-weight:800;color:#ef4444;">${losers.length}</div>
-        <div style="font-size:10px;color:#ef4444;margin-top:3px;">of ${stocks.length} tracked</div>
+      <td style="padding:22px 18px;border-right:1px solid #0f2035;text-align:center;width:110px;">
+        <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:8px;">LOSERS</div>
+        <div style="font-size:30px;font-weight:900;color:#f87171;">${losers.length}</div>
+        <div style="font-size:11px;color:#7f1d1d;margin-top:4px;font-weight:600;">of ${allStocks.length}</div>
       </td>
-      <td style="padding:20px 16px;text-align:center;width:100px;">
-        <div style="font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:6px;">BREADTH</div>
-        <div style="font-size:28px;font-weight:800;color:${breadthPct >= 50 ? "#22c55e" : "#ef4444"};">${breadthPct}%</div>
-        <div style="font-size:10px;color:#6b7280;margin-top:3px;">bullish</div>
+      <td style="padding:22px 18px;text-align:center;width:110px;">
+        <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:8px;">BREADTH</div>
+        <div style="font-size:30px;font-weight:900;color:${breadthPct >= 50 ? "#4ade80" : "#f87171"};">${breadthPct}%</div>
+        <div style="font-size:11px;color:#334155;margin-top:4px;font-weight:600;">bullish</div>
       </td>
     </tr>
-    <!-- breadth bar -->
     <tr>
-      <td colspan="4" style="padding:0;">
-        <table cellpadding="0" cellspacing="0" style="width:100%;">
-          <tr>
-            <td style="width:${breadthPct}%;height:4px;background:linear-gradient(90deg,#22c55e,#16a34a);"></td>
-            <td style="width:${100 - breadthPct}%;height:4px;background:linear-gradient(90deg,#dc2626,#ef4444);"></td>
-          </tr>
-        </table>
+      <td colspan="4" style="padding:0;line-height:0;">
+        <table cellpadding="0" cellspacing="0" style="width:100%;"><tr>
+          <td style="width:${breadthPct}%;height:5px;background:linear-gradient(90deg,#16a34a,#4ade80);"></td>
+          <td style="width:${100 - breadthPct}%;height:5px;background:linear-gradient(90deg,#dc2626,#f87171);"></td>
+        </tr></table>
       </td>
     </tr>
   </table>
 
-  <!-- ── EXEC BRIEF ─────────────────────────────────── -->
-  <div style="background:#0c1629;border:1px solid #1e3a5f;border-radius:16px;padding:20px 24px;margin-bottom:16px;">
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;">
-      <span style="font-size:10px;color:#60a5fa;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;">✦ The Brief</span>
-      <span style="font-size:10px;color:#1e3a5f;background:#1e3a5f;border-radius:4px;padding:1px 6px;color:#93c5fd;">AI · Exec Sum Style</span>
-    </div>
-    <div style="font-size:16px;font-weight:700;color:#ffffff;margin-bottom:14px;line-height:1.4;">${ai.headline}</div>
+  <!-- THE BRIEF -->
+  <div style="background:#020b18;border:1px solid #0f2035;border-radius:18px;padding:22px 26px;margin-bottom:14px;">
+    <div style="font-size:11px;color:#3b82f6;text-transform:uppercase;letter-spacing:0.14em;font-weight:800;margin-bottom:13px;">✦ The Brief</div>
+    <div style="font-size:18px;font-weight:900;color:#f8fafc;margin-bottom:16px;line-height:1.35;letter-spacing:-0.3px;">${ai.headline}</div>
     <table cellpadding="0" cellspacing="0" style="width:100%;">
       ${ai.brief.map((b) => `
       <tr>
-        <td style="padding:4px 0;vertical-align:top;width:16px;font-size:13px;color:#3b82f6;">→</td>
-        <td style="padding:4px 0 4px 6px;font-size:13px;color:#94a3b8;line-height:1.5;">${b}</td>
+        <td style="padding:5px 0;vertical-align:top;width:18px;font-size:14px;color:#2563eb;font-weight:900;">→</td>
+        <td style="padding:5px 0 5px 8px;font-size:14px;color:#94a3b8;line-height:1.55;font-weight:500;">${b}</td>
       </tr>`).join("")}
     </table>
   </div>
 
-  <!-- ── MOVERS CHART ───────────────────────────────── -->
-  <div style="background:#111827;border:1px solid #1f2937;border-radius:16px;overflow:hidden;margin-bottom:16px;">
-    <div style="padding:16px 20px 12px;">
-      <span style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;">Top Movers — % Change</span>
+  <!-- CHART -->
+  <div style="background:#040d1a;border:1px solid #0f2035;border-radius:18px;overflow:hidden;margin-bottom:14px;">
+    <div style="padding:18px 22px 10px;">
+      <span style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;">Top Movers — % Change</span>
     </div>
     <img src="${chartUrl}" alt="Top Movers Chart" width="560" style="width:100%;display:block;border:0;" />
   </div>
 
-  <!-- ── GAINERS / LOSERS TABLE ─────────────────────── -->
-  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
+  <!-- GAINERS / LOSERS -->
+  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:14px;">
     <tr>
       <td style="width:49%;vertical-align:top;">
-        <div style="background:#0a1a0a;border:1px solid #14532d;border-radius:16px;padding:16px 18px;">
-          <div style="font-size:10px;color:#22c55e;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;margin-bottom:10px;">▲ Top Gainers</div>
+        <div style="background:#020f06;border:1px solid #14532d;border-radius:18px;padding:18px 20px;">
+          <div style="font-size:11px;color:#4ade80;text-transform:uppercase;letter-spacing:0.12em;font-weight:800;margin-bottom:12px;">▲ Top Gainers</div>
           <table cellpadding="0" cellspacing="0" style="width:100%;">
-            ${moverCell(topG, "#22c55e")}
+            ${moverRows(topG, "#4ade80")}
           </table>
         </div>
       </td>
       <td style="width:2%;"></td>
       <td style="width:49%;vertical-align:top;">
-        <div style="background:#1a0a0a;border:1px solid #7f1d1d;border-radius:16px;padding:16px 18px;">
-          <div style="font-size:10px;color:#ef4444;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;margin-bottom:10px;">▼ Top Losers</div>
+        <div style="background:#0f0202;border:1px solid #7f1d1d;border-radius:18px;padding:18px 20px;">
+          <div style="font-size:11px;color:#f87171;text-transform:uppercase;letter-spacing:0.12em;font-weight:800;margin-bottom:12px;">▼ Top Losers</div>
           <table cellpadding="0" cellspacing="0" style="width:100%;">
-            ${moverCell(topL, "#ef4444")}
+            ${moverRows(topL, "#f87171")}
           </table>
         </div>
       </td>
     </tr>
   </table>
 
-  <!-- ── SECTOR PERFORMANCE ─────────────────────────── -->
-  <div style="background:#111827;border:1px solid #1f2937;border-radius:16px;padding:18px 20px;margin-bottom:16px;">
-    <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:14px;">Sector Performance</div>
-    <table cellpadding="0" cellspacing="0" style="width:100%;">
-      ${sectorRows}
-    </table>
+  <!-- SECTOR PERFORMANCE -->
+  <div style="background:#040d1a;border:1px solid #0f2035;border-radius:18px;padding:20px 22px;margin-bottom:14px;">
+    <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:16px;">Sector Performance</div>
+    <table cellpadding="0" cellspacing="0" style="width:100%;">${sectorRows}</table>
   </div>
 
-  <!-- ── OPPORTUNITIES & RISKS ──────────────────────── -->
-  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:16px;">
+  <!-- OPPORTUNITIES + RISKS -->
+  <table cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:14px;">
     <tr>
       <td style="width:49%;vertical-align:top;">
-        <div style="background:#0d1f12;border:1px solid #166534;border-radius:16px;padding:16px 18px;">
-          <div style="font-size:10px;color:#4ade80;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;margin-bottom:10px;">Opportunities</div>
-          ${ai.opportunities.map((o) => `<div style="font-size:12px;color:#86efac;margin-bottom:6px;padding-left:12px;border-left:2px solid #166534;">✓ ${o}</div>`).join("")}
+        <div style="background:#020f06;border:1px solid #14532d;border-radius:18px;padding:18px 20px;">
+          <div style="font-size:11px;color:#4ade80;text-transform:uppercase;letter-spacing:0.12em;font-weight:800;margin-bottom:12px;">Opportunities</div>
+          ${ai.opportunities.map((o) => `<div style="font-size:13px;color:#86efac;margin-bottom:8px;padding-left:13px;border-left:3px solid #166534;font-weight:500;line-height:1.5;">✓ ${o}</div>`).join("")}
         </div>
       </td>
       <td style="width:2%;"></td>
       <td style="width:49%;vertical-align:top;">
-        <div style="background:#1c0a0a;border:1px solid #991b1b;border-radius:16px;padding:16px 18px;">
-          <div style="font-size:10px;color:#f87171;text-transform:uppercase;letter-spacing:0.1em;font-weight:700;margin-bottom:10px;">Risks</div>
-          ${ai.risks.map((r) => `<div style="font-size:12px;color:#fca5a5;margin-bottom:6px;padding-left:12px;border-left:2px solid #991b1b;">⚠ ${r}</div>`).join("")}
+        <div style="background:#0f0202;border:1px solid #7f1d1d;border-radius:18px;padding:18px 20px;">
+          <div style="font-size:11px;color:#f87171;text-transform:uppercase;letter-spacing:0.12em;font-weight:800;margin-bottom:12px;">Risks</div>
+          ${ai.risks.map((r) => `<div style="font-size:13px;color:#fca5a5;margin-bottom:8px;padding-left:13px;border-left:3px solid #991b1b;font-weight:500;line-height:1.5;">⚠ ${r}</div>`).join("")}
         </div>
       </td>
     </tr>
   </table>
 
-  <!-- ── WHAT TO WATCH ──────────────────────────────── -->
-  <div style="background:#111827;border:1px solid #1f2937;border-radius:16px;padding:18px 20px;margin-bottom:24px;">
-    <div style="font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.1em;font-weight:600;margin-bottom:12px;">What to Watch Today</div>
+  <!-- WHAT TO WATCH -->
+  <div style="background:#040d1a;border:1px solid #0f2035;border-radius:18px;padding:20px 22px;margin-bottom:26px;">
+    <div style="font-size:11px;color:#475569;text-transform:uppercase;letter-spacing:0.12em;font-weight:700;margin-bottom:14px;">What to Watch Today</div>
     ${ai.watch.map((w, i) => `
-    <div style="display:flex;align-items:flex-start;margin-bottom:8px;">
-      <span style="font-size:11px;color:#3b82f6;font-weight:800;min-width:20px;margin-right:10px;margin-top:1px;">${i + 1}</span>
-      <span style="font-size:13px;color:#d1d5db;line-height:1.5;">${w}</span>
+    <div style="margin-bottom:10px;display:flex;align-items:flex-start;">
+      <span style="font-size:13px;color:#2563eb;font-weight:900;min-width:22px;margin-right:10px;margin-top:1px;">${i + 1}</span>
+      <span style="font-size:14px;color:#cbd5e1;line-height:1.55;font-weight:500;">${w}</span>
     </div>`).join("")}
   </div>
 
-  <!-- ── CTA ────────────────────────────────────────── -->
+  <!-- CTA -->
   <div style="text-align:center;margin-bottom:28px;">
     <a href="https://stock-fix-alpha.vercel.app/dashboard"
-       style="display:inline-block;background:linear-gradient(135deg,#3b82f6,#2563eb);color:#ffffff;font-size:13px;font-weight:700;padding:13px 32px;border-radius:12px;text-decoration:none;letter-spacing:0.02em;">
+       style="display:inline-block;background:linear-gradient(135deg,#1d4ed8,#2563eb);color:#ffffff;font-size:14px;font-weight:800;padding:15px 38px;border-radius:14px;text-decoration:none;letter-spacing:0.03em;">
       Open Dashboard →
     </a>
   </div>
 
-  <!-- ── FOOTER ─────────────────────────────────────── -->
-  <div style="border-top:1px solid #1f2937;padding-top:16px;text-align:center;">
-    <p style="margin:0 0 4px;font-size:11px;color:#374151;">
-      StockFix · Daily at 7:15am KST · Data via Naver Finance · AI by Claude
-    </p>
-    <p style="margin:0;font-size:10px;color:#1f2937;">
-      For informational purposes only. Not financial advice.
-    </p>
+  <!-- FOOTER -->
+  <div style="border-top:1px solid #0f2035;padding-top:16px;text-align:center;">
+    <p style="margin:0 0 4px;font-size:12px;color:#1e3a5f;font-weight:500;">StockFix · Daily at 7:15am KST · Data via Naver Finance · AI by Claude</p>
+    <p style="margin:0;font-size:11px;color:#0f2035;">For informational purposes only. Not financial advice.</p>
   </div>
 
 </div>
@@ -319,7 +310,7 @@ Return ONLY valid JSON in this exact structure:
       html,
     });
 
-    return NextResponse.json({ ok: true, kospi: kospi.value, headline: ai.headline });
+    return NextResponse.json({ ok: true, kospi: kospiValue, headline: ai.headline, gainers: gainers.length, losers: losers.length });
   } catch (err) {
     console.error("Morning briefing error:", err);
     return NextResponse.json({ error: String(err) }, { status: 500 });
