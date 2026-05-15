@@ -51,6 +51,29 @@ export const STOCK_FACTORS: Record<string, { factors: string[]; related: string[
   "017670": { factors: ["5G 가입자 수", "B2B·데이터센터", "요금제 경쟁", "AI 서비스"], related: ["030200", "T", "VZ"], related_names: ["KT", "AT&T", "Verizon"], sector: "통신" },
 };
 
+export const DIVIDEND_DATA: Record<string, { yield_pct: number; pay_months: number[] }> = {
+  "005930": { yield_pct: 2.2, pay_months: [4] },
+  "000660": { yield_pct: 0.5, pay_months: [4] },
+  "373220": { yield_pct: 0.0, pay_months: [] },
+  "207940": { yield_pct: 0.0, pay_months: [] },
+  "005380": { yield_pct: 3.0, pay_months: [4] },
+  "005490": { yield_pct: 3.5, pay_months: [4] },
+  "006400": { yield_pct: 0.4, pay_months: [4] },
+  "035720": { yield_pct: 0.2, pay_months: [4] },
+  "035420": { yield_pct: 0.3, pay_months: [4] },
+  "000270": { yield_pct: 4.0, pay_months: [4] },
+  "068270": { yield_pct: 0.2, pay_months: [4] },
+  "105560": { yield_pct: 5.5, pay_months: [2, 5, 8, 11] },
+  "055550": { yield_pct: 5.5, pay_months: [2, 5, 8, 11] },
+  "051910": { yield_pct: 1.5, pay_months: [4] },
+  "017670": { yield_pct: 6.5, pay_months: [2, 5, 8, 11] },
+  "012330": { yield_pct: 2.5, pay_months: [4] },
+  "066570": { yield_pct: 1.8, pay_months: [4] },
+  "028260": { yield_pct: 1.5, pay_months: [4] },
+  "034020": { yield_pct: 0.5, pay_months: [4] },
+  "352820": { yield_pct: 0.0, pay_months: [] },
+};
+
 export const DEFAULT_FACTORS = {
   factors: ["국내 경기 지표", "업종별 산업 동향", "원·달러 환율", "글로벌 증시"],
   related: ["KOSPI", "NASDAQ", "S&P500"],

@@ -77,6 +77,10 @@ export default function KospiBar({ budget, onBudgetChange, onBudgetSave, showInv
             )}
           </div>
 
+          <button onClick={() => router.push("/portfolio")} className="bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 hover:text-white text-sm font-medium px-4 py-2 rounded-xl transition-colors">
+            Portfolio
+          </button>
+
           {showInvestButton && (
             <button onClick={() => router.push("/invest")} className="bg-blue-500 hover:bg-blue-400 text-white text-sm font-medium px-4 py-2 rounded-xl transition-colors">
               Invest →
